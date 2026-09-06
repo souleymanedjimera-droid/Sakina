@@ -1,0 +1,217 @@
+// Schéma Prisma — Sakîna
+// Base de données relationnelle (PostgreSQL recommandé)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Genre {
+  HOMME
+  FEMME
+}
+
+enum Pratique {
+  PRATIQUANT
+  EN_CHEMINEMENT
+  NON_PRATIQUANT_CROYANT
+}
+
+enum Madhab {
+  NON_PRECISE
+  HANAFITE
+  MALIKITE
+  CHAFEITE
+  HANBALITE
+}
+
+enum StatutMatrimonial {
+  JAMAIS_MARIE
+  DIVORCE
+  VEUF
+}
+
+enum RoleUtilisateur {
+  MEMBRE
+  MODERATEUR
+  ADMIN
+}
+
+enum StatutVerification {
+  EN_ATTENTE
+  VALIDEE
+  REJETEE
+}
+
+enum StatutInteret {
+  ENVOYE
+  ACCEPTE
+  REFUSE
+}
+
+enum StatutSignalement {
+  OUVERT
+  TRAITE
+  REJETE
+}
+
+model User {
+  id              String   @id @default(cuid())
+  email           String   @unique
+  telephone       String?  @unique
+  motDePasseHash  String
+  role            RoleUtilisateur @default(MEMBRE)
+  // Nombre de messages qu'il reste le droit d'envoyer. Décrémenté de 1 à chaque envoi.
+  // 20 messages offerts à l'inscription (voir app/api/register) pour permettre de tester
+  // avant de payer ; ajustable sans toucher au schéma.
+  messagesRestants Int     @default(20)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  profil          Profil?
+  verification    Verification?
+
+  messagesEnvoyes Message[] @relation("MessagesEnvoyes")
+  achats          Achat[]
+  signalementsFaits Signalement[] @relation("SignalementsFaits")
+  signalementsRecus Signalement[] @relation("SignalementsRecus")
+}
+
+model Profil {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  prenom            String
+  genre             Genre
+  dateNaissance      DateTime
+  ville             String
+  pratique          Pratique
+  madhab            Madhab   @default(NON_PRECISE)
+  statutMatrimonial StatutMatrimonial
+  intention         String   @default("mariage") // toujours "mariage", champ verrouillé côté API
+  bio               String   @db.Text
+  photoUrl          String?  // masquée côté API tant que match non accepté
+
+  waliNom           String?
+  waliContact       String?
+  waliActif         Boolean  @default(false)
+
+  visible           Boolean  @default(false) // passe à true après validation modération
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  interetsEnvoyes   Interet[] @relation("InteretsEnvoyes")
+  interetsRecus     Interet[] @relation("InteretsRecus")
+}
+
+model Verification {
+  id                        String   @id @default(cuid())
+  userId                    String   @unique
+  user                      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // La pièce d'identité et le selfie sont capturés et hébergés par Stripe Identity :
+  // nous ne stockons jamais nous-mêmes de document d'identité.
+  stripeVerificationSessionId String @unique
+  statut                    StatutVerification @default(EN_ATTENTE)
+  noteModerateur            String?
+  traitePar                 String?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+}
+
+model Interet {
+  id            String   @id @default(cuid())
+  emetteurId    String
+  emetteur      Profil   @relation("InteretsEnvoyes", fields: [emetteurId], references: [id], onDelete: Cascade)
+  destinataireId String
+  destinataire  Profil   @relation("InteretsRecus", fields: [destinataireId], references: [id], onDelete: Cascade)
+  statut        StatutInteret @default(ENVOYE)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  match         Match?
+
+  @@unique([emetteurId, destinataireId])
+}
+
+model Match {
+  id           String   @id @default(cuid())
+  interetId    String   @unique
+  interet      Interet  @relation(fields: [interetId], references: [id], onDelete: Cascade)
+  createdAt    DateTime @default(now())
+
+  messages     Message[]
+  appels       Appel[]
+}
+
+model Message {
+  id           String   @id @default(cuid())
+  matchId      String
+  match        Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  auteurId     String
+  auteur       User     @relation("MessagesEnvoyes", fields: [auteurId], references: [id], onDelete: Cascade)
+  contenu      String   @db.Text
+  copieWaliEnvoyee Boolean @default(false)
+  createdAt    DateTime @default(now())
+}
+
+enum StatutAppel {
+  SONNE
+  EN_COURS
+  TERMINE
+  MANQUE
+}
+
+model Appel {
+  id           String   @id @default(cuid())
+  matchId      String
+  match        Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  initiateurId String
+  statut       StatutAppel @default(SONNE)
+  debutAt      DateTime @default(now())
+  finAt        DateTime?
+  // Aucun flux audio/vidéo n'est enregistré ni stocké : uniquement les métadonnées
+  // (qui a appelé qui, quand, combien de temps) à des fins de sécurité/modération.
+}
+
+enum StatutPaiement {
+  EN_ATTENTE
+  VALIDE
+  ECHOUE
+}
+
+model Achat {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Les packs eux-mêmes sont définis en dur dans lib/packs.ts (300/700, 600/1000, 1000/2000 FCFA) :
+  // pas besoin de table séparée pour 3 valeurs fixes, mais on trace ce qui a été acheté.
+  packId          String
+  messagesAchetes Int
+  montantFcfa     Int
+
+  // Identifiant de transaction envoyé à CinetPay, unique, sert à retrouver l'achat
+  // depuis leur webhook et à vérifier le paiement via leur API de contrôle.
+  transactionId   String   @unique
+  statut          StatutPaiement @default(EN_ATTENTE)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Signalement {
+  id           String   @id @default(cuid())
+  auteurId     String
+  auteur       User     @relation("SignalementsFaits", fields: [auteurId], references: [id], onDelete: Cascade)
+  cibleId      String
+  cible        User     @relation("SignalementsRecus", fields: [cibleId], references: [id], onDelete: Cascade)
+  motif        String
+  details      String?  @db.Text
+  statut       StatutSignalement @default(OUVERT)
+  createdAt    DateTime @default(now())
+}
