@@ -1,0 +1,20 @@
+version: "3.8"
+
+# Déploiement du serveur TURN sur un VPS dédié (pas sur Vercel : coturn a besoin
+# d'un serveur qui tourne en continu et de ports UDP ouverts).
+#
+# Utilisation :
+#   1. Pointez un sous-domaine (ex: turn.votre-domaine.com) vers l'IP du VPS.
+#   2. Obtenez un certificat TLS (voir README, section "Certificat TLS").
+#   3. Modifiez turnserver.conf (realm, static-auth-secret, chemins des certificats).
+#   4. docker compose up -d
+
+services:
+  coturn:
+    image: coturn/coturn:4.6.2
+    restart: unless-stopped
+    network_mode: host # nécessaire pour la plage de ports relayés UDP
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]
